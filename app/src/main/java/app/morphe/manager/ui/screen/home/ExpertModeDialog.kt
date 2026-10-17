@@ -525,6 +525,7 @@ fun DialogHostScope.ExpertModeDialog(
             appIcon = appIcon,
             accentColor = appColor,
             isDefaultBundle = bundleUid == 0,
+            bundleFileFor = { sourcesByUid[bundleUid]?.patchesJarFile },
             values = options[bundleUid]?.get(patch.name),
             onValueChange = { key, value ->
                 patchActions.onOptionChange(bundleUid, patch.name, key, value)
