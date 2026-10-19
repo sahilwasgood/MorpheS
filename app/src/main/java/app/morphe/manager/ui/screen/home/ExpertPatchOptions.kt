@@ -231,8 +231,9 @@ internal fun DialogHostScope.PatchOptionsDialog(
     val showColorPicker = remember { mutableStateOf<Pair<String, String>?>(null) }
     // The installed bundle archive holds previews/<package>/<optionKey>/<value>. A source whose
     // file is absent keeps every row text only.
+    val context = LocalContext.current
     val bundleFile = remember { bundleFileFor?.invoke() }
-    val previewCache = remember { LocalContext.current.cacheDir }
+    val previewCache = remember(context) { context.cacheDir }
     ListDialog(
         onDismissRequest = onDismiss,
         accentColor = accentColor,
