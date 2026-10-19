@@ -1,0 +1,148 @@
+name: MorpheS
+
+on:
+  schedule:
+    # Daily, after upstream's translation bot settles
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Release even when upstream has no new commits'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-release:
+    name: Sync upstream and release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.MORPHE_S_GPR }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Git identity
+        run: |
+          git config user.name "sahilwasgood"
+          git config user.email "sahilwasgood@users.noreply.github.com"
+          git remote add upstream "https://x-access-token:${{ secrets.MORPHE_S_GPR }}@github.com/MorpheApp/morphe-manager.git"
+
+      - name: Sync with upstream dev
+        id: sync
+        env:
+          FORCE: ${{ inputs.force_release }}
+        run: |
+          set -euo pipefail
+          git fetch upstream dev
+          BASE=$(git merge-base HEAD upstream/dev)
+          AHEAD=$(git rev-list --count "$BASE"..upstream/dev)
+
+          if [ "$AHEAD" -eq 0 ] && [ "${FORCE:-false}" != "true" ]; then
+            echo "No new upstream commits and no forced release. Nothing to do."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Upstream is ${AHEAD} commit(s) ahead; rebasing our commits"
+          git rebase upstream/dev
+          git push --force-with-lease origin main
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Stop when nothing to publish
+        if: steps.sync.outputs.published != 'true'
+        run: exit 0
+
+      - name: Version and suffix
+        if: steps.sync.outputs.published == 'true'
+        id: version
+        run: |
+          set -euo pipefail
+          BASE=$(grep -E '^version' app/gradle.properties | head -1 | sed 's/.*=\s*//')
+          SUFFIX="s.${{ github.run_number }}"
+          FULL="${BASE}-${SUFFIX}"
+          sed -i "s/^version\s*=.*/version = ${FULL}/" app/gradle.properties
+          echo "full=${FULL}" >> "$GITHUB_OUTPUT"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${FULL}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short upstream/dev)" >> "$GITHUB_OUTPUT"
+
+      - name: Write keystore
+        if: steps.sync.outputs.published == 'true'
+        run: echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > app/morphes.jks
+
+      - name: Tests and debug APK
+        if: steps.sync.outputs.published == 'true'
+        env:
+          GITHUB_ACTOR: sahilwasgood
+          GITHUB_TOKEN: ${{ secrets.MORPHE_S_GPR }}
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug \
+            -PmorpheSKeystore=app/morphes.jks \
+            -PmorpheSKeystorePassword="${{ secrets.MORPHE_S_KEYSTORE_PASSWORD }}" \
+            -PmorpheSKeystoreAlias=morphes \
+            --no-daemon --stacktrace
+
+      - name: Rename APK
+        if: steps.sync.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p apk-out
+          SRC=$(find app/build/outputs/apk/debug -name '*-debug.apk' | head -1)
+          cp "$SRC" "apk-out/MorpheS-${{ steps.version.outputs.full }}.apk"
+
+      - name: Update app-release.json and commit
+        if: steps.sync.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          FULL="${{ steps.version.outputs.full }}"
+          BASE="${{ steps.version.outputs.base }}"
+          SHA="${{ steps.version.outputs.sha }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          NOTES="# MorpheS ${FULL}
+
+          Synced with upstream Morphe dev at ${SHA}.
+          Carries the fork features: preset thumbnail previews for patch bundles (images and muted clips), previews cache keyed per bundle version, MorpheS identity.
+
+          Upstream notes for ${BASE}: https://github.com/MorpheApp/morphe-manager/blob/dev/CHANGELOG.md"
+          python3 - "$FULL" "$SHA" "$BASE" "$TAG" "$NOTES" << 'PY'
+          import json, sys
+          full, sha, base, tag, notes = sys.argv[1:6]
+          data = {
+              "created_at": None,
+              "description": notes,
+              "download_url": f"https://github.com/sahilwasgood/MorpheS/releases/download/{tag}/MorpheS-{full}.apk",
+              "signature_download_url": "",
+              "version": full
+          }
+          import datetime
+          data["created_at"] = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+          open("app-release.json", "w").write(json.dumps(data, indent=2))
+          PY
+          git add app-release.json
+          git commit -m "chore: MorpheS release ${FULL} [skip ci]"
+          git push origin main
+
+      - name: Publish GitHub release
+        if: steps.sync.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MORPHE_S_GPR }}
+          FULL: ${{ steps.version.outputs.full }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ steps.version.outputs.sha }}
+        run: gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "MorpheS ${FULL}" \
+              --notes "Synced with upstream Morphe dev at ${SHA}. Carries our preset thumbnail previews and their cache fix. Upstream notes: https://github.com/MorpheApp/morphe-manager/blob/dev/CHANGELOG.md" \
+              "apk-out/MorpheS-${FULL}.apk"

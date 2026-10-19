@@ -259,6 +259,18 @@ android {
         vectorDrawables.useSupportLibrary = true
     }
 
+    // MorpheS: all debug builds (local and CI) sign with one personal keystore so
+    // releases always install over each other. Upstream defaults stay intact when
+    // the properties are absent.
+    signingConfigs.getByName("debug").apply {
+        (project.findProperty("morpheSKeystore") as String?)?.let { path ->
+            storeFile = file(path)
+            storePassword = (project.findProperty("morpheSKeystorePassword") as String?) ?: ""
+            keyAlias = (project.findProperty("morpheSKeystoreAlias") as String?) ?: "morphes"
+            keyPassword = storePassword
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
