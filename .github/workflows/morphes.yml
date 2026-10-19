@@ -1,6 +1,6 @@
 name: MorpheS
 
-on:
+"on":
   schedule:
     # Daily, after upstream's translation bot settles
     - cron: '30 4 * * *'
@@ -10,6 +10,10 @@ on:
         description: 'Release even when upstream has no new commits'
         type: boolean
         default: true
+      skip_sync:
+        description: 'Skip the upstream rebase (build main as pushed)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,8 +46,14 @@ jobs:
         id: sync
         env:
           FORCE: ${{ inputs.force_release }}
+          SKIP_SYNC: ${{ inputs.skip_sync }}
         run: |
           set -euo pipefail
+          if [ "${SKIP_SYNC:-false}" = "true" ]; then
+            echo "skip_sync: building main as pushed, no upstream rebase"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git fetch upstream dev
           BASE=$(git merge-base HEAD upstream/dev)
           AHEAD=$(git rev-list --count "$BASE"..upstream/dev)
@@ -55,8 +65,9 @@ jobs:
           fi
 
           echo "Upstream is ${AHEAD} commit(s) ahead; rebasing our commits"
+          # Rebase only: origin/main is pushed later, after tests and the build
+          # pass, so a broken upstream pin never lands on the fork.
           git rebase upstream/dev
-          git push --force-with-lease origin main
           echo "published=true" >> "$GITHUB_OUTPUT"
 
       - name: Stop when nothing to publish
@@ -66,16 +77,22 @@ jobs:
       - name: Version and suffix
         if: steps.sync.outputs.published == 'true'
         id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
           BASE=$(grep -E '^version' app/gradle.properties | head -1 | sed 's/.*=\s*//')
-          SUFFIX="s.${{ github.run_number }}"
-          FULL="${BASE}-${SUFFIX}"
+          # Update weight parses only the last number after the dash, so the fork
+          # suffix number must stay above the upstream dev counter forever:
+          # weight = dev counter + run number grows monotonically across syncs.
+          DEV=$(echo "$BASE" | grep -oE 'dev\.[0-9]+' | cut -d. -f2); DEV=${DEV:-0}
+          WEIGHT=$(( DEV + RUN_NUMBER ))
+          FULL="${BASE}-s.${WEIGHT}"
           sed -i "s/^version\s*=.*/version = ${FULL}/" app/gradle.properties
           echo "full=${FULL}" >> "$GITHUB_OUTPUT"
           echo "base=${BASE}" >> "$GITHUB_OUTPUT"
           echo "tag=v${FULL}" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse --short upstream/dev)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short upstream/dev 2>/dev/null || echo skip-sync)" >> "$GITHUB_OUTPUT"
 
       - name: Write keystore
         if: steps.sync.outputs.published == 'true'
@@ -89,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           ./gradlew :app:testDebugUnitTest :app:assembleDebug \
-            -PmorpheSKeystore=app/morphes.jks \
+            -PmorpheSKeystore=morphes.jks \
             -PmorpheSKeystorePassword="${{ secrets.MORPHE_S_KEYSTORE_PASSWORD }}" \
             -PmorpheSKeystoreAlias=morphes \
             --no-daemon --stacktrace
@@ -102,37 +119,9 @@ jobs:
           SRC=$(find app/build/outputs/apk/debug -name '*-debug.apk' | head -1)
           cp "$SRC" "apk-out/MorpheS-${{ steps.version.outputs.full }}.apk"
 
-      - name: Update app-release.json and commit
+      - name: Push rebased main
         if: steps.sync.outputs.published == 'true'
-        run: |
-          set -euo pipefail
-          FULL="${{ steps.version.outputs.full }}"
-          BASE="${{ steps.version.outputs.base }}"
-          SHA="${{ steps.version.outputs.sha }}"
-          TAG="${{ steps.version.outputs.tag }}"
-          NOTES="# MorpheS ${FULL}
-
-          Synced with upstream Morphe dev at ${SHA}.
-          Carries the fork features: preset thumbnail previews for patch bundles (images and muted clips), previews cache keyed per bundle version, MorpheS identity.
-
-          Upstream notes for ${BASE}: https://github.com/MorpheApp/morphe-manager/blob/dev/CHANGELOG.md"
-          python3 - "$FULL" "$SHA" "$BASE" "$TAG" "$NOTES" << 'PY'
-          import json, sys
-          full, sha, base, tag, notes = sys.argv[1:6]
-          data = {
-              "created_at": None,
-              "description": notes,
-              "download_url": f"https://github.com/sahilwasgood/MorpheS/releases/download/{tag}/MorpheS-{full}.apk",
-              "signature_download_url": "",
-              "version": full
-          }
-          import datetime
-          data["created_at"] = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-          open("app-release.json", "w").write(json.dumps(data, indent=2))
-          PY
-          git add app-release.json
-          git commit -m "chore: MorpheS release ${FULL} [skip ci]"
-          git push origin main
+        run: git push --force-with-lease origin main
 
       - name: Publish GitHub release
         if: steps.sync.outputs.published == 'true'
@@ -141,8 +130,14 @@ jobs:
           FULL: ${{ steps.version.outputs.full }}
           TAG: ${{ steps.version.outputs.tag }}
           SHA: ${{ steps.version.outputs.sha }}
-        run: gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "MorpheS ${FULL}" \
-              --notes "Synced with upstream Morphe dev at ${SHA}. Carries our preset thumbnail previews and their cache fix. Upstream notes: https://github.com/MorpheApp/morphe-manager/blob/dev/CHANGELOG.md" \
-              "apk-out/MorpheS-${FULL}.apk"
+        run: |
+          if [ "$SHA" = "skip-sync" ]; then
+            STATE="built from main as pushed; no upstream rebase in this run"
+          else
+            STATE="synced with upstream Morphe dev at ${SHA}"
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "MorpheS ${FULL}" \
+            --notes "MorpheS ${FULL}. ${STATE}. Carries our preset thumbnail previews and their cache fix. Upstream notes: https://github.com/MorpheApp/morphe-manager/blob/dev/CHANGELOG.md" \
+            "apk-out/MorpheS-${FULL}.apk"
