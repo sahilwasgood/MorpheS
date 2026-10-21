@@ -26,14 +26,21 @@ const val BLOCKED_SOURCES_URL = "$MORPHE_API_URL/v2/blocked-sources"
 /** Website page behind add-source links: ?github|gitlab=owner/repo(&name=...) */
 const val ADD_SOURCE_PATH = "/add-source"
 
-/** Raw GitHub URL for the stable manager release JSON (main branch) */
+/**
+ * Raw GitHub URL for the stable manager release JSON (main branch).
+ *
+ * Kept because upstream resolves it through this constant. The MorpheS fork
+ * self update instead reads GitHub Releases through the API
+ * (USE_MANAGER_DIRECT_JSON = false), so branch history holds no release-json
+ * commits and upstream rebases stay clean.
+ */
 const val MANAGER_RELEASE_JSON_URL = "https://raw.githubusercontent.com/sahilwasgood/MorpheS/refs/heads/main/app-release.json"
 
 /** Raw GitHub URL for the pre-release manager release JSON (dev branch) */
 const val MANAGER_PRERELEASE_JSON_URL = "https://raw.githubusercontent.com/sahilwasgood/MorpheS/refs/heads/main/app-release.json"
 
 /** Controls whether manager updates are fetched directly from JSON files in the repository instead of using the GitHub API */
-const val USE_MANAGER_DIRECT_JSON = true
+const val USE_MANAGER_DIRECT_JSON = false
 
 /** Controls whether patches are fetched directly from JSON files in the repository instead of using the Morphe API */
 const val USE_PATCHES_DIRECT_JSON = true

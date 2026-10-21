@@ -19,8 +19,8 @@ built as `app.morphe.manager.debug` and released from this repository as
 
 ## Updates
 
-The app self updates from this repository: a check resolves `app-release.json`
-on the `main` branch, downloads the attached APK and installs it. A scheduled
+The app self updates from this repository: a check reads the GitHub Releases
+of this repo, downloads the APK attached to the latest release and installs it. A scheduled
 workflow here rebases on upstream Morphe `dev` daily and publishes a release
 whenever upstream moved, so upstream changes keep arriving with the fork
 features intact. Version strings carry an `-s.N` suffix, and the suffix rules
